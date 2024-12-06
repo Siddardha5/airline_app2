@@ -5,21 +5,21 @@ from nltk.corpus import stopwords
 from nltk.stem import WordNetLemmatizer
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.decomposition import NMF
+import matplotlib.pyplot as plt
+import seaborn as sns
 from wordcloud import WordCloud
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-import matplotlib.pyplot as plt
-import seaborn as sns
 
-# Download NLTK resources
+# Setup and Imports
 nltk.download('stopwords')
 nltk.download('wordnet')
 nltk.download('punkt')
 
-# Streamlit App
-st.title("Sentiment Analysis and Topic Modeling for Product Reviews")
+# Streamlit App Title
+st.title("Product Reviews Analysis")
 
-# Dataset
+# Sample Reviews Dataset - (Product: earphones)
 data = {
     'review': [
         "Fantastic audio quality with crisp highs and deep bass. Perfect for audiophiles!",
@@ -48,7 +48,7 @@ data = {
 
 df = pd.DataFrame(data)
 
-# Preprocessing
+# Preprocessing and Cleaning
 lemmatizer = WordNetLemmatizer()
 stop_words = set(stopwords.words('english'))
 
@@ -59,9 +59,10 @@ def preprocess_text(text):
     tokens = [lemmatizer.lemmatize(t) for t in tokens]
     return ' '.join(tokens)
 
+# Adding Preprocessed Text to DataFrame
 df['clean_review'] = df['review'].apply(preprocess_text)
 
-# Sentiment Analysis
+# Sentiment Analysis using Transformers (DistilBERT)
 model_name = "distilbert-base-uncased-finetuned-sst-2-english"
 model = AutoModelForSequenceClassification.from_pretrained(model_name)
 tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -72,11 +73,23 @@ def analyze_sentiment(text):
         logits = model(**inputs).logits
     return torch.argmax(logits).item()
 
+# Add Sentiment to DataFrame
 df['sentiment'] = df['review'].apply(analyze_sentiment)
+
+# Mapping Sentiment (0 - Negative, 1 - Positive) to More Readable Format
 sentiment_map = {0: 'Negative', 1: 'Positive'}
 df['sentiment'] = df['sentiment'].map(sentiment_map)
 
-# Topic Modeling
+# Streamlit Sidebar Options
+st.sidebar.header("Options")
+view_data = st.sidebar.checkbox("View Raw Data")
+
+# Display Raw Data if Selected
+if view_data:
+    st.subheader("Raw Reviews Data")
+    st.write(df)
+
+# Topic Modeling (Basic) using NMF
 vectorizer = TfidfVectorizer(max_features=1000)
 tfidf = vectorizer.fit_transform(df['clean_review'])
 nmf = NMF(n_components=2).fit(tfidf)
@@ -89,44 +102,35 @@ def display_topics(model, feature_names, no_top_words):
 
 feature_names = vectorizer.get_feature_names_out()
 topics = display_topics(nmf, feature_names, 5)
+st.subheader("Topics Identified in Reviews")
+st.write(topics)
 
-# Display Topics
-st.subheader("Identified Topics")
-for topic, words in topics.items():
-    st.write(f"{topic}: {', '.join(words)}")
-
-# WordCloud for Sentiment
-st.subheader("Word Clouds")
+# WordCloud for Positive and Negative Sentiments
+st.subheader("WordCloud for Sentiments")
 positive_text = ' '.join(df[df['sentiment'] == 'Positive']['review'])
 negative_text = ' '.join(df[df['sentiment'] == 'Negative']['review'])
 
-col1, col2 = st.columns(2)
-with col1:
-    st.markdown("**Positive Sentiment**")
-    wordcloud_pos = WordCloud(width=800, height=800, background_color='white').generate(positive_text)
-    st.image(wordcloud_pos.to_array(), use_column_width=True)
-with col2:
-    st.markdown("**Negative Sentiment**")
-    wordcloud_neg = WordCloud(width=800, height=800, background_color='white').generate(negative_text)
-    st.image(wordcloud_neg.to_array(), use_column_width=True)
+st.write("### Positive Sentiment WordCloud")
+positive_wordcloud = WordCloud(width=800, height=800, background_color='white', min_font_size=10).generate(positive_text)
+st.image(positive_wordcloud.to_array())
 
-# Sentiment Distribution
+st.write("### Negative Sentiment WordCloud")
+negative_wordcloud = WordCloud(width=800, height=800, background_color='white', min_font_size=10).generate(negative_text)
+st.image(negative_wordcloud.to_array())
+
+# Sentiment Distribution Visualization
 st.subheader("Sentiment Distribution")
-fig_sentiment = plt.figure(figsize=(8, 6))
-sns.countplot(x='sentiment', data=df)
-st.pyplot(fig_sentiment)
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.countplot(x='sentiment', data=df, ax=ax)
+st.pyplot(fig)
 
-# Average Rating Distribution
+# Average Rating Distribution Visualization
 st.subheader("Average Rating Distribution")
-fig_rating = plt.figure(figsize=(8, 6))
-sns.barplot(x='rating', y='rating', data=df, estimator=lambda x: len(x) / len(df) * 100)
-st.pyplot(fig_rating)
+fig, ax = plt.subplots(figsize=(8, 6))
+sns.barplot(x='rating', y='rating', data=df, estimator=lambda x: len(x) / len(df) * 100, ax=ax)
+ax.set_ylabel('Percentage of Reviews')
+st.pyplot(fig)
 
-# Summary and Takeaways
-average_rating = df['rating'].mean()
-st.subheader("Overall Summary")
-st.write(f"**Average Rating:** {average_rating:.2f}")
-if average_rating < 4:
-    st.write("**Takeaways:** Consider improving build quality and addressing common customer complaints.")
-else:
-    st.write("**Takeaways:** Customers are generally satisfied. Focus on maintaining quality and innovation.")
+# Display Average Rating
+st.subheader("Average Rating")
+st.write(df['rating'].mean())
