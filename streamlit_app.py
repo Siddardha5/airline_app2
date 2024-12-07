@@ -1,27 +1,73 @@
+# Streamlit: Make sure to run this as a .py file using `streamlit run your_file.py`
 import streamlit as st
+import openai
 import pandas as pd
-import nltk
-from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.decomposition import NMF
-import matplotlib.pyplot as plt
-import seaborn as sns
+import numpy as np
+from collections import Counter
+from transformers import pipeline
 from wordcloud import WordCloud
-import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import matplotlib.pyplot as plt
+from langchain.prompts import ChatPromptTemplate
+from langchain.chains import LLMChain
+from langchain_openai import ChatOpenAI
+import os
 
-# Setup and Imports
-nltk.download('stopwords')
-nltk.download('wordnet')
-nltk.download('punkt')
+# Set up DeepAI API key from Streamlit secrets
+llm = ChatOpenAI(openai_api_key=st.secrets["MyOpenAIKey"], model_name="gpt-3.5-turbo")
+sentiment_analyzer = pipeline("sentiment-analysis", model="distilbert-base-uncased-finetuned-sst-2-english")
+summarizer = pipeline("summarization", model="sshleifer/distilbart-cnn-12-6")
 
-# Streamlit App Title
-st.title("Product Reviews Analysis")
+class ReviewAnalyzer:
+    def __init__(self):
+        # Initialize the LLM and sentiment analyzer
+        self.client = llm
+
+    def analyze_reviews(self, data):
+        aligned_data = self.align_reviews_and_ratings(data)
+        return self.handle_overall_reviews(aligned_data), self.handle_individual_reviews(aligned_data)
+
+    def align_reviews_and_ratings(self, data):
+        checked_data = pd.DataFrame(data)
+        checked_data['sentiment'] = checked_data['reviews'].apply(lambda x: sentiment_analyzer(x)[0]['label'])
+        checked_data['adjusted_rating'] = checked_data.apply(self.adjust_rating, axis=1)
+        return checked_data
+
+    def adjust_rating(self, row):
+        sentiment = row['sentiment']
+        rating = row['ratings']
+        if sentiment == 'POSITIVE' and rating < 4:
+            return 3
+        elif sentiment == 'NEGATIVE' and rating > 2:
+            return 3
+        else:
+            return rating
+
+    def handle_overall_reviews(self, checked_data):
+        avg_rating = np.mean(checked_data['adjusted_rating'])
+        all_reviews = " ".join(checked_data['reviews'])
+        summary_prompt = ChatPromptTemplate.from_template(
+            "Summarize the following product reviews in about 100 words. "
+            "If the average rating is less than 4 out of 5, include suggestions to improve. "
+            "If the average rating is 4 or higher, identify what to continue keeping.\n\n"
+            "Average Rating: {rating}\n"
+            "Reviews: {reviews}\n\n"
+            "Summary:"
+        )
+        summary_chain = summary_prompt | self.client
+        summary = summary_chain.invoke({"rating": avg_rating, "reviews": all_reviews})
+        return {
+            "average_rating": avg_rating,
+            "summary": summary.content.strip()
+        }
+
+    def handle_individual_reviews(self, checked_data):
+        positive_reviews = checked_data[checked_data['sentiment'] == 'POSITIVE']['reviews'].tolist()
+        negative_reviews = checked_data[checked_data['sentiment'] == 'NEGATIVE']['reviews'].tolist()
+        return positive_reviews, negative_reviews
 
 # Sample Reviews Dataset - (Product: earphones)
 data = {
-    'review': [
+    'reviews': [
         "Fantastic audio quality with crisp highs and deep bass. Perfect for audiophiles!",
         "Terrible build quality. The earphones broke after just two weeks of light use.",
         "Comfortable fit and amazing sound isolation. Great for long listening sessions.",
@@ -43,94 +89,39 @@ data = {
         "Battery life is great, lasting all day. Perfect for commuting or travel.",
         "The earbuds feel cheap and plasticky. Expected better at this price point."
     ],
-    'rating': [5, 1, 5, 2, 4, 1, 5, 2, 5, 1, 5, 2, 4, 1, 5, 2, 5, 1, 5, 2]
+    'ratings': [5, 1, 5, 2, 4, 1, 5, 2, 5, 1, 5, 2, 4, 1, 5, 2, 5, 1, 5, 2]
 }
 
-df = pd.DataFrame(data)
+# Streamlit interface
+st.title("Review Analyzer")
 
-# Preprocessing and Cleaning
-lemmatizer = WordNetLemmatizer()
-stop_words = set(stopwords.words('english'))
+if st.button("Analyze Reviews"):
+    analyzer = ReviewAnalyzer()
+    overall_summary, individual_reviews = analyzer.analyze_reviews(data)
 
-def preprocess_text(text):
-    text = text.lower()
-    tokens = nltk.word_tokenize(text)
-    tokens = [t for t in tokens if t.isalpha() and t not in stop_words]
-    tokens = [lemmatizer.lemmatize(t) for t in tokens]
-    return ' '.join(tokens)
+    st.subheader("Overall Analysis")
+    st.write(f"Overall Average Rating: {overall_summary['average_rating']:.2f}")
+    st.write("Overall Summary of Reviews:")
+    st.write(overall_summary['summary'])
 
-# Adding Preprocessed Text to DataFrame
-df['clean_review'] = df['review'].apply(preprocess_text)
+    st.subheader("Positive Reviews")
+    for review in individual_reviews[0]:
+        st.write(review)
 
-# Sentiment Analysis using Transformers (DistilBERT)
-model_name = "distilbert-base-uncased-finetuned-sst-2-english"
-model = AutoModelForSequenceClassification.from_pretrained(model_name)
-tokenizer = AutoTokenizer.from_pretrained(model_name)
+    st.subheader("Negative Reviews")
+    for review in individual_reviews[1]:
+        st.write(review)
 
-def analyze_sentiment(text):
-    inputs = tokenizer(text, return_tensors='pt')
-    with torch.no_grad():
-        logits = model(**inputs).logits
-    return torch.argmax(logits).item()
+    # Optional: Visualization of the overall ratings
+    visualization_choice = st.selectbox("Would you like to visualize the ratings?", ["Yes", "No"])
+    if visualization_choice == "Yes":
+        rating_counts = pd.Series(data['ratings']).value_counts().sort_index()
 
-# Add Sentiment to DataFrame
-df['sentiment'] = df['review'].apply(analyze_sentiment)
+        # Bar chart
+        st.subheader("Distribution of Ratings")
+        st.bar_chart(rating_counts)
 
-# Mapping Sentiment (0 - Negative, 1 - Positive) to More Readable Format
-sentiment_map = {0: 'Negative', 1: 'Positive'}
-df['sentiment'] = df['sentiment'].map(sentiment_map)
-
-# Streamlit Sidebar Options
-st.sidebar.header("Options")
-view_data = st.sidebar.checkbox("View Raw Data")
-
-# Display Raw Data if Selected
-if view_data:
-    st.subheader("Raw Reviews Data")
-    st.write(df)
-
-# Topic Modeling (Basic) using NMF
-vectorizer = TfidfVectorizer(max_features=1000)
-tfidf = vectorizer.fit_transform(df['clean_review'])
-nmf = NMF(n_components=2).fit(tfidf)
-
-def display_topics(model, feature_names, no_top_words):
-    topic_dict = {}
-    for topic_idx, topic in enumerate(model.components_):
-        topic_dict[f"Topic {topic_idx}"] = [feature_names[i] for i in topic.argsort()[:-no_top_words - 1:-1]]
-    return topic_dict
-
-feature_names = vectorizer.get_feature_names_out()
-topics = display_topics(nmf, feature_names, 5)
-st.subheader("Topics Identified in Reviews")
-st.write(topics)
-
-# WordCloud for Positive and Negative Sentiments
-st.subheader("WordCloud for Sentiments")
-positive_text = ' '.join(df[df['sentiment'] == 'Positive']['review'])
-negative_text = ' '.join(df[df['sentiment'] == 'Negative']['review'])
-
-st.write("### Positive Sentiment WordCloud")
-positive_wordcloud = WordCloud(width=800, height=800, background_color='white', min_font_size=10).generate(positive_text)
-st.image(positive_wordcloud.to_array())
-
-st.write("### Negative Sentiment WordCloud")
-negative_wordcloud = WordCloud(width=800, height=800, background_color='white', min_font_size=10).generate(negative_text)
-st.image(negative_wordcloud.to_array())
-
-# Sentiment Distribution Visualization
-st.subheader("Sentiment Distribution")
-fig, ax = plt.subplots(figsize=(8, 6))
-sns.countplot(x='sentiment', data=df, ax=ax)
-st.pyplot(fig)
-
-# Average Rating Distribution Visualization
-st.subheader("Average Rating Distribution")
-fig, ax = plt.subplots(figsize=(8, 6))
-sns.barplot(x='rating', y='rating', data=df, estimator=lambda x: len(x) / len(df) * 100, ax=ax)
-ax.set_ylabel('Percentage of Reviews')
-st.pyplot(fig)
-
-# Display Average Rating
-st.subheader("Average Rating")
-st.write(df['rating'].mean())
+        average_rating = np.mean(data['ratings'])
+        st.write("Average Rating Distribution (in %):")
+        st.write(rating_counts / len(data['ratings']) * 100)
+        st.write("Average Rating:", average_rating)
